@@ -6,6 +6,7 @@ $ fonttools varLib.mutator ./NotoSansArabic-VF.ttf wght=140 wdth=85
 from __future__ import print_function, division, absolute_import
 from fontTools.misc.py23 import *
 from fontTools.misc.fixedTools import floatToFixedToFloat, otRound
+from fontTools.misc.psCharStrings import T2FlattenSubrsDecompiler
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
 from fontTools.varLib import _GetCoordinates, _SetCoordinates
@@ -51,7 +52,7 @@ def interpolate_cff2_PrivateDict(topDict, interpolateFromDeltas):
 				deltas to date to each successive absolute value."""
 				delta = 0
 				for i, val_list in enumerate(value):
-					delta += otRound(interpolateFromDeltas(vsindex, 
+					delta += otRound(interpolateFromDeltas(vsindex,
 										val_list[1:]))
 					value[i] = val_list[0] + delta
 
@@ -60,12 +61,14 @@ def interpolate_cff2_charstrings(topDict, interpolateFromDeltas, glyphOrder):
 	charstrings = topDict.CharStrings
 	for gname in glyphOrder:
 		charstring = charstrings[gname]
-		charstring.decompile()
-		vsindex = charstring.private.vsindex if (
-													hasattr(charstring.private,
-													'vsindex')) else 0
-		num_regions = charstring.private.getNumRegions(vsindex)
+		pd = charstring.private
+		vsindex = pd.vsindex if (hasattr(pd, 'vsindex')) else 0
+		num_regions = pd.getNumRegions(vsindex)
 		numMasters = num_regions + 1
+		subrs = getattr(pd, "Subrs", [])
+		if subrs:
+			charstring.decompilerClass = T2FlattenSubrsDecompiler
+		charstring.decompile()
 		new_program = []
 		last_i = 0
 		for i, token in enumerate(charstring.program):
@@ -92,6 +95,17 @@ def interpolate_cff2_charstrings(topDict, interpolateFromDeltas, glyphOrder):
 		if last_i != 0:
 			new_program.extend(charstring.program[last_i:])
 			charstring.program = new_program
+
+	# Since we have flattened all the charstrings, we need to delete the subrs.
+	del topDict.GlobalSubrs 
+	# An empty GlobalSubrs will always be written to the CCF2 table,
+	# even if missingfrom the decompiled CFF2 data.
+	for fontDict in topDict.FDArray:
+		pd = fontDict.Private
+		subrs = getattr(pd, "Subrs", [])
+		if subrs:
+			del pd.Subrs
+			del pd.rawDict['Subrs']
 
 
 def instantiateVariableFont(varfont, location, inplace=False):
