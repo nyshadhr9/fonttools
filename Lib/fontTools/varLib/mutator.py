@@ -6,17 +6,21 @@ $ fonttools varLib.mutator ./NotoSansArabic-VF.ttf wght=140 wdth=85
 from __future__ import print_function, division, absolute_import
 from fontTools.misc.py23 import *
 from fontTools.misc.fixedTools import floatToFixedToFloat, otRound, floatToFixed
+from fontTools.pens.boundsPen import BoundsPen
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import ttProgram
-from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
+from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates, flagOverlapSimple, OVERLAP_COMPOUND
 from fontTools.varLib import _GetCoordinates, _SetCoordinates
 from fontTools.varLib.models import (
-	supportScalar, normalizeLocation, piecewiseLinearMap
+	supportScalar,
+	normalizeLocation,
+	piecewiseLinearMap,
 )
 from fontTools.varLib.merger import MutatorMerger
 from fontTools.varLib.varStore import VarStoreInstancer
 from fontTools.varLib.mvar import MVAR_ENTRIES
 from fontTools.varLib.iup import iup_delta
+import fontTools.subset.cff
 import os.path
 import logging
 
@@ -31,7 +35,117 @@ for i, (prev, curr) in enumerate(zip(percents[:-1], percents[1:]), start=1):
 	OS2_WIDTH_CLASS_VALUES[half] = i
 
 
-def instantiateVariableFont(varfont, location, inplace=False):
+def interpolate_cff2_PrivateDict(topDict, interpolateFromDeltas):
+	pd_blend_lists = ("BlueValues", "OtherBlues", "FamilyBlues",
+						"FamilyOtherBlues", "StemSnapH",
+						"StemSnapV")
+	pd_blend_values = ("BlueScale", "BlueShift",
+						"BlueFuzz", "StdHW", "StdVW")
+	for fontDict in topDict.FDArray:
+		pd = fontDict.Private
+		vsindex = pd.vsindex if (hasattr(pd, 'vsindex')) else 0
+		for key, value in pd.rawDict.items():
+			if (key in pd_blend_values) and isinstance(value, list):
+					delta = interpolateFromDeltas(vsindex, value[1:])
+					pd.rawDict[key] = otRound(value[0] + delta)
+			elif (key in pd_blend_lists) and isinstance(value[0], list):
+				"""If any argument in a BlueValues list is a blend list,
+				then they all are. The first value of each list is an
+				absolute value. The delta tuples are calculated from
+				relative master values, hence we need to append all the
+				deltas to date to each successive absolute value."""
+				delta = 0
+				for i, val_list in enumerate(value):
+					delta += otRound(interpolateFromDeltas(vsindex,
+										val_list[1:]))
+					value[i] = val_list[0] + delta
+
+
+def interpolate_cff2_charstrings(topDict, interpolateFromDeltas, glyphOrder):
+	charstrings = topDict.CharStrings
+	for gname in glyphOrder:
+		# Interpolate charstring
+		charstring = charstrings[gname]
+		pd = charstring.private
+		vsindex = pd.vsindex if (hasattr(pd, 'vsindex')) else 0
+		num_regions = pd.getNumRegions(vsindex)
+		numMasters = num_regions + 1
+		new_program = []
+		last_i = 0
+		for i, token in enumerate(charstring.program):
+			if token == 'blend':
+				num_args = charstring.program[i - 1]
+				""" The stack is now:
+				..args for following operations
+				num_args values  from the default font
+				num_args tuples, each with numMasters-1 delta values
+				num_blend_args
+				'blend'
+				"""
+				argi = i - (num_args*numMasters + 1)
+				end_args = tuplei = argi + num_args
+				while argi < end_args:
+					next_ti = tuplei + num_regions
+					deltas = charstring.program[tuplei:next_ti]
+					delta = interpolateFromDeltas(vsindex, deltas)
+					charstring.program[argi] += otRound(delta)
+					tuplei = next_ti
+					argi += 1
+				new_program.extend(charstring.program[last_i:end_args])
+				last_i = i + 1
+		if last_i != 0:
+			new_program.extend(charstring.program[last_i:])
+			charstring.program = new_program
+
+
+def interpolate_cff2_metrics(varfont, topDict, glyphOrder, loc):
+	"""Unlike TrueType glyphs, neither advance width nor bounding box
+	info is stored in a CFF2 charstring. The width data exists only in
+	the hmtx and HVAR tables. Since LSB data cannot be interpolated
+	reliably from the master LSB values in the hmtx table, we traverse
+	the charstring to determine the actual bound box. """
+
+	charstrings = topDict.CharStrings
+	boundsPen = BoundsPen(glyphOrder)
+	hmtx = varfont['hmtx']
+	hvar_table = None
+	if 'HVAR' in varfont:
+		hvar_table = varfont['HVAR'].table
+		fvar = varfont['fvar']
+		varStoreInstancer = VarStoreInstancer(hvar_table.VarStore, fvar.axes, loc)
+
+	for gid, gname in enumerate(glyphOrder):
+		entry = list(hmtx[gname])
+		# get width delta.
+		if hvar_table:
+			if hvar_table.AdvWidthMap:
+				width_idx = hvar_table.AdvWidthMap.mapping[gname]
+			else:
+				width_idx = gid
+			width_delta = otRound(varStoreInstancer[width_idx])
+		else:
+			width_delta = 0
+
+		# get LSB.
+		boundsPen.init()
+		charstring = charstrings[gname]
+		charstring.draw(boundsPen)
+		if boundsPen.bounds is None:
+			# Happens with non-marking glyphs
+			lsb_delta = 0
+		else:
+			lsb = boundsPen.bounds[0]
+		lsb_delta = entry[1] - lsb
+
+		if lsb_delta or width_delta:
+			if width_delta:
+				entry[0] += width_delta
+			if lsb_delta:
+				entry[1] = lsb
+			hmtx[gname] = tuple(entry)
+
+
+def instantiateVariableFont(varfont, location, inplace=False, overlap=True):
 	""" Generate a static instance from a variable TTFont and a dictionary
 	defining the desired location along the variable font's axes.
 	The location values must be specified as user-space coordinates, e.g.:
@@ -40,6 +154,10 @@ def instantiateVariableFont(varfont, location, inplace=False):
 
 	By default, a new TTFont object is returned. If ``inplace`` is True, the
 	input varfont is modified and reduced to a static font.
+
+	When the overlap parameter is defined as True,
+	OVERLAP_SIMPLE and OVERLAP_COMPOUND bits are set to 1.  See
+	https://docs.microsoft.com/en-us/typography/opentype/spec/glyf
 	"""
 	if not inplace:
 		# make a copy to leave input varfont unmodified
@@ -59,31 +177,34 @@ def instantiateVariableFont(varfont, location, inplace=False):
 	# Location is normalized now
 	log.info("Normalized location: %s", loc)
 
-	log.info("Mutating glyf/gvar tables")
-	gvar = varfont['gvar']
-	glyf = varfont['glyf']
-	# get list of glyph names in gvar sorted by component depth
-	glyphnames = sorted(
-		gvar.variations.keys(),
-		key=lambda name: (
-			glyf[name].getCompositeMaxpValues(glyf).maxComponentDepth
-			if glyf[name].isComposite() else 0,
-			name))
-	for glyphname in glyphnames:
-		variations = gvar.variations[glyphname]
-		coordinates,_ = _GetCoordinates(varfont, glyphname)
-		origCoords, endPts = None, None
-		for var in variations:
-			scalar = supportScalar(loc, var.axes)
-			if not scalar: continue
-			delta = var.coordinates
-			if None in delta:
-				if origCoords is None:
-					origCoords,control = _GetCoordinates(varfont, glyphname)
-					endPts = control[1] if control[0] >= 1 else list(range(len(control[1])))
-				delta = iup_delta(delta, origCoords, endPts)
-			coordinates += GlyphCoordinates(delta) * scalar
-		_SetCoordinates(varfont, glyphname, coordinates)
+	if 'gvar' in varfont:
+		log.info("Mutating glyf/gvar tables")
+		gvar = varfont['gvar']
+		glyf = varfont['glyf']
+		# get list of glyph names in gvar sorted by component depth
+		glyphnames = sorted(
+			gvar.variations.keys(),
+			key=lambda name: (
+				glyf[name].getCompositeMaxpValues(glyf).maxComponentDepth
+				if glyf[name].isComposite() else 0,
+				name))
+		for glyphname in glyphnames:
+			variations = gvar.variations[glyphname]
+			coordinates,_ = _GetCoordinates(varfont, glyphname)
+			origCoords, endPts = None, None
+			for var in variations:
+				scalar = supportScalar(loc, var.axes)
+				if not scalar: continue
+				delta = var.coordinates
+				if None in delta:
+					if origCoords is None:
+						origCoords,control = _GetCoordinates(varfont, glyphname)
+						endPts = control[1] if control[0] >= 1 else list(range(len(control[1])))
+					delta = iup_delta(delta, origCoords, endPts)
+				coordinates += GlyphCoordinates(delta) * scalar
+			_SetCoordinates(varfont, glyphname, coordinates)
+	else:
+		glyf = None
 
 	if 'cvar' in varfont:
 		log.info("Mutating cvt/cvar tables")
@@ -98,6 +219,20 @@ def instantiateVariableFont(varfont, location, inplace=False):
 					deltas[i] = deltas.get(i, 0) + scalar * c
 		for i, delta in deltas.items():
 			cvt[i] += otRound(delta)
+
+	if 'CFF2' in varfont:
+		log.info("Mutating CFF2 table")
+		glyphOrder = varfont.getGlyphOrder()
+		CFF2 = varfont['CFF2']
+		topDict = CFF2.cff.topDictIndex[0]
+		vsInstancer = VarStoreInstancer(topDict.VarStore.otVarStore, fvar.axes, loc)
+		interpolateFromDeltas = vsInstancer.interpolateFromDeltas
+		interpolate_cff2_PrivateDict(topDict, interpolateFromDeltas)
+		CFF2.desubroutinize()
+		interpolate_cff2_charstrings(topDict, interpolateFromDeltas, glyphOrder)
+		interpolate_cff2_metrics(varfont, topDict, glyphOrder, loc)
+		del topDict.rawDict['VarStore']
+		del topDict.VarStore
 
 	if 'MVAR' in varfont:
 		log.info("Mutating MVAR table")
@@ -168,15 +303,24 @@ def instantiateVariableFont(varfont, location, inplace=False):
 			(gdef.Version >= 0x00010002 and gdef.MarkGlyphSetsDef)):
 			del varfont['GDEF']
 
-
 	addidef = False
-	for glyph in glyf.glyphs.values():
-		if hasattr(glyph, "program"):
-			instructions = glyph.program.getAssembly()
-			# If GETVARIATION opcode is used in bytecode of any glyph add IDEF
-			addidef = any(op.startswith("GETVARIATION") for op in instructions)
-			if addidef:
-				break
+	if glyf:
+		for glyph in glyf.glyphs.values():
+			if hasattr(glyph, "program"):
+				instructions = glyph.program.getAssembly()
+				# If GETVARIATION opcode is used in bytecode of any glyph add IDEF
+				addidef = any(op.startswith("GETVARIATION") for op in instructions)
+				if addidef:
+					break
+		if overlap:
+			for glyph_name in glyf.keys():
+				glyph = glyf[glyph_name]
+				# Set OVERLAP_COMPOUND bit for compound glyphs
+				if glyph.isComposite():
+					glyph.components[0].flags |= OVERLAP_COMPOUND
+				# Set OVERLAP_SIMPLE bit for simple glyphs
+				elif glyph.numberOfContours > 0:
+					glyph.flags[0] |= flagOverlapSimple
 	if addidef:
 		log.info("Adding IDEF to fpgm table for GETVARIATION opcode")
 		asm = []
@@ -214,6 +358,16 @@ def instantiateVariableFont(varfont, location, inplace=False):
 		for i in fvar.instances:
 			exclude.add(i.subfamilyNameID)
 			exclude.add(i.postscriptNameID)
+		if 'ltag' in varfont:
+			# Drop the whole 'ltag' table if all its language tags are referenced by
+			# name records to be pruned.
+			# TODO: prune unused ltag tags and re-enumerate langIDs accordingly
+			excludedUnicodeLangIDs = [
+				n.langID for n in varfont['name'].names
+				if n.nameID in exclude and n.platformID == 0 and n.langID != 0xFFFF
+			]
+			if set(excludedUnicodeLangIDs) == set(range(len((varfont['ltag'].tags)))):
+				del varfont['ltag']
 		varfont['name'].names[:] = [
 			n for n in varfont['name'].names
 			if n.nameID not in exclude
@@ -263,6 +417,12 @@ def main(args=None):
 		"-v", "--verbose", action="store_true", help="Run more verbosely.")
 	logging_group.add_argument(
 		"-q", "--quiet", action="store_true", help="Turn verbosity off.")
+	parser.add_argument(
+		"--no-overlap",
+		dest="overlap",
+		action="store_false",
+		help="Don't set OVERLAP_SIMPLE/OVERLAP_COMPOUND glyf flags."
+	)
 	options = parser.parse_args(args)
 
 	varfilename = options.input
@@ -287,7 +447,7 @@ def main(args=None):
 	log.info("Loading variable font")
 	varfont = TTFont(varfilename)
 
-	instantiateVariableFont(varfont, loc, inplace=True)
+	instantiateVariableFont(varfont, loc, inplace=True, overlap=options.overlap)
 
 	log.info("Saving instance font %s", outfile)
 	varfont.save(outfile)

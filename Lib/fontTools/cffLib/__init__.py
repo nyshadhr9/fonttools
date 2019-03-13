@@ -607,6 +607,9 @@ class Index(object):
 	def getCompiler(self, strings, parent, isCFF2=None):
 		return self.compilerClass(self, strings, parent, isCFF2=isCFF2)
 
+	def clear(self):
+		del self.items[:]
+
 
 class GlobalSubrsIndex(Index):
 
@@ -623,11 +626,6 @@ class GlobalSubrsIndex(Index):
 			self.fdSelect = fdSelect
 		if fdArray:
 			self.fdArray = fdArray
-		if isCFF2:
-			# CFF2Subr's can have numeric arguments on the stack after the last operator.
-			self.subrClass = psCharStrings.CFF2Subr
-			self.charStringClass = psCharStrings.CFF2Subr
-			
 
 	def produceItem(self, index, data, file, offset):
 		if self.private is not None:
@@ -2247,6 +2245,12 @@ class BaseDict(object):
 		return self.compilerClass(self, strings, parent, isCFF2=isCFF2)
 
 	def __getattr__(self, name):
+		if name[:2] == name[-2:] == "__":
+			# to make deepcopy() and pickle.load() work, we need to signal with
+			# AttributeError that dunder methods like '__deepcopy__' or '__getstate__'
+			# aren't implemented. For more details, see:
+			# https://github.com/fonttools/fonttools/pull/1488
+			raise AttributeError(name)
 		value = self.rawDict.get(name, None)
 		if value is None:
 			value = self.defaults.get(name)
@@ -2336,7 +2340,7 @@ class TopDict(BaseDict):
 
 	def decompileAllCharStrings(self):
 		# Make sure that all the Private Dicts have been instantiated.
-		for charString in self.CharStrings.values():
+		for i, charString in enumerate(self.CharStrings.values()):
 			try:
 				charString.decompile()
 			except:
@@ -2424,9 +2428,16 @@ class PrivateDict(BaseDict):
 		if isCFF2:
 			self.defaults = buildDefaults(privateDictOperators2)
 			self.order = buildOrder(privateDictOperators2)
+			# Provide dummy values. This avoids needing to provide
+			# an isCFF2 state in a lot of places.
+			self.nominalWidthX = self.defaultWidthX = None
 		else:
 			self.defaults = buildDefaults(privateDictOperators)
 			self.order = buildOrder(privateDictOperators)
+
+	@property
+	def in_cff2(self):
+		return self._isCFF2
 
 	def getNumRegions(self, vi=None):  # called from misc/psCharStrings.py
 		# if getNumRegions is being called, we can assume that VarStore exists.

@@ -109,6 +109,21 @@
   </OS_2>
 
   <name>
+    <namerecord nameID="1" platformID="1" platEncID="0" langID="0x0" unicode="True">
+      HelloTestFont
+    </namerecord>
+    <namerecord nameID="2" platformID="1" platEncID="0" langID="0x0" unicode="True">
+      TotallyNormal
+    </namerecord>
+    <namerecord nameID="6" platformID="1" platEncID="0" langID="0x0" unicode="True">
+      HelloTestFont-TotallyNormal
+    </namerecord>
+    <namerecord nameID="1" platformID="1" platEncID="0" langID="0x4" unicode="True">
+      HalloTestFont
+    </namerecord>
+    <namerecord nameID="2" platformID="1" platEncID="0" langID="0x4" unicode="True">
+      TotaalNormaal
+    </namerecord>
     <namerecord nameID="1" platformID="3" platEncID="1" langID="0x409">
       HelloTestFont
     </namerecord>
@@ -161,7 +176,7 @@
       <UnderlineThickness value="50"/>
       <PaintType value="0"/>
       <CharstringType value="2"/>
-      <FontMatrix value="0.001 0 0 0.001 0 0"/>
+      <FontMatrix value="0.0009765625 0 0 0.0009765625 0 0"/>
       <FontBBox value="100 100 500 1000"/>
       <StrokeWidth value="0"/>
       <!-- charset is dumped separately as the 'GlyphOrder' element -->

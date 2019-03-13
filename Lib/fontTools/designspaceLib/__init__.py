@@ -235,7 +235,6 @@ class InstanceDescriptor(SimpleDescriptor):
         self.localisedStyleMapStyleName = {}
         self.localisedStyleMapFamilyName = {}
         self.glyphs = {}
-        self.mutedGlyphNames = []
         self.kerning = True
         self.info = True
 
@@ -246,25 +245,25 @@ class InstanceDescriptor(SimpleDescriptor):
     filename = posixpath_property("_filename")
 
     def setStyleName(self, styleName, languageCode="en"):
-        self.localisedStyleName[languageCode] = styleName
+        self.localisedStyleName[languageCode] = tounicode(styleName)
 
     def getStyleName(self, languageCode="en"):
         return self.localisedStyleName.get(languageCode)
 
     def setFamilyName(self, familyName, languageCode="en"):
-        self.localisedFamilyName[languageCode] = familyName
+        self.localisedFamilyName[languageCode] = tounicode(familyName)
 
     def getFamilyName(self, languageCode="en"):
         return self.localisedFamilyName.get(languageCode)
 
     def setStyleMapStyleName(self, styleMapStyleName, languageCode="en"):
-        self.localisedStyleMapStyleName[languageCode] = styleMapStyleName
+        self.localisedStyleMapStyleName[languageCode] = tounicode(styleMapStyleName)
 
     def getStyleMapStyleName(self, languageCode="en"):
         return self.localisedStyleMapStyleName.get(languageCode)
 
     def setStyleMapFamilyName(self, styleMapFamilyName, languageCode="en"):
-        self.localisedStyleMapFamilyName[languageCode] = styleMapFamilyName
+        self.localisedStyleMapFamilyName[languageCode] = tounicode(styleMapFamilyName)
 
     def getStyleMapFamilyName(self, languageCode="en"):
         return self.localisedStyleMapFamilyName.get(languageCode)
@@ -673,12 +672,6 @@ class BaseDocReader(LogMixin):
         self.readInstances()
         self.readLib()
 
-    def getSourcePaths(self, makeGlyphs=True, makeKerning=True, makeInfo=True):
-        paths = []
-        for name in self.documentObject.sources.keys():
-            paths.append(self.documentObject.sources[name][0].path)
-        return paths
-
     def readRules(self):
         # we also need to read any conditions that are outside of a condition set.
         rules = []
@@ -759,8 +752,7 @@ class BaseDocReader(LogMixin):
                 # '{http://www.w3.org/XML/1998/namespace}lang'
                 for key, lang in labelNameElement.items():
                     if key == XML_LANG:
-                        labelName = labelNameElement.text
-                        axisObject.labelNames[lang] = labelName
+                        axisObject.labelNames[lang] = tounicode(labelNameElement.text)
             self.documentObject.axes.append(axisObject)
             self.axisDefaults[axisObject.name] = axisObject.default
         self.documentObject.defaultLoc = self.axisDefaults
@@ -1053,6 +1045,8 @@ class DesignSpaceDocument(LogMixin, AsDictMixin):
         return f.getvalue()
 
     def read(self, path):
+        if hasattr(path, "__fspath__"):  # support os.PathLike objects
+            path = path.__fspath__()
         self.path = path
         self.filename = os.path.basename(path)
         reader = self.readerClass(path, self)
@@ -1061,6 +1055,8 @@ class DesignSpaceDocument(LogMixin, AsDictMixin):
             self.findDefault()
 
     def write(self, path):
+        if hasattr(path, "__fspath__"):  # support os.PathLike objects
+            path = path.__fspath__()
         self.path = path
         self.filename = os.path.basename(path)
         self.updatePaths()
@@ -1113,21 +1109,11 @@ class DesignSpaceDocument(LogMixin, AsDictMixin):
 
 
         """
+        assert self.path is not None
         for descriptor in self.sources + self.instances:
-            # check what the relative path really should be?
-            expectedFilename = None
-            if descriptor.path is not None and self.path is not None:
-                expectedFilename = self._posixRelativePath(descriptor.path)
-
-            # 3
-            if descriptor.filename is None and descriptor.path is not None and self.path is not None:
+            if descriptor.path is not None:
+                # case 3 and 4: filename gets updated and relativized
                 descriptor.filename = self._posixRelativePath(descriptor.path)
-                continue
-
-            # 4
-            if descriptor.filename is not None and descriptor.path is not None and self.path is not None:
-                if descriptor.filename is not expectedFilename:
-                    descriptor.filename = expectedFilename
 
     def addSource(self, sourceDescriptor):
         self.sources.append(sourceDescriptor)
@@ -1142,11 +1128,14 @@ class DesignSpaceDocument(LogMixin, AsDictMixin):
         self.rules.append(ruleDescriptor)
 
     def newDefaultLocation(self):
+        """Return default location in design space."""
         # Without OrderedDict, output XML would be non-deterministic.
         # https://github.com/LettError/designSpaceDocument/issues/10
         loc = collections.OrderedDict()
         for axisDescriptor in self.axes:
-            loc[axisDescriptor.name] = axisDescriptor.default
+            loc[axisDescriptor.name] = axisDescriptor.map_forward(
+                axisDescriptor.default
+            )
         return loc
 
     def updateFilenameFromPath(self, masters=True, instances=True, force=False):
@@ -1190,43 +1179,43 @@ class DesignSpaceDocument(LogMixin, AsDictMixin):
         return None
 
     def findDefault(self):
-        # new default finder
-        # take the sourcedescriptor with the location at all the defaults
-        # if we can't find it, return None, let someone else figure it out
+        """Set and return SourceDescriptor at the default location or None.
+
+        The default location is the set of all `default` values in user space
+        of all axes.
+        """
         self.default = None
+
+        # Convert the default location from user space to design space before comparing
+        # it against the SourceDescriptor locations (always in design space).
+        default_location_design = {
+            axis.name: axis.map_forward(self.defaultLoc[axis.name])
+            for axis in self.axes
+        }
+
         for sourceDescriptor in self.sources:
-            if sourceDescriptor.location == self.defaultLoc:
-                # we choose you!
+            if sourceDescriptor.location == default_location_design:
                 self.default = sourceDescriptor
                 return sourceDescriptor
+
         return None
 
     def normalizeLocation(self, location):
-        # adapted from fontTools.varlib.models.normalizeLocation because:
-        #   - this needs to work with axis names, not tags
-        #   - this needs to accomodate anisotropic locations
-        #   - the axes are stored differently here, it's just math
+        from fontTools.varLib.models import normalizeValue
+
         new = {}
         for axis in self.axes:
             if axis.name not in location:
                 # skipping this dimension it seems
                 continue
-            v = location.get(axis.name, axis.default)
-            if type(v) == tuple:
-                v = v[0]
-            if v == axis.default:
-                v = 0.0
-            elif v < axis.default:
-                if axis.default == axis.minimum:
-                    v = 0.0
-                else:
-                    v = (max(v, axis.minimum) - axis.default) / (axis.default - axis.minimum)
-            else:
-                if axis.default == axis.maximum:
-                    v = 0.0
-                else:
-                    v = (min(v, axis.maximum) - axis.default) / (axis.maximum - axis.default)
-            new[axis.name] = v
+            value = location[axis.name]
+            # 'anisotropic' location, take first coord only
+            if isinstance(value, tuple):
+                value = value[0]
+            triple = [
+                axis.map_forward(v) for v in (axis.minimum, axis.default, axis.maximum)
+            ]
+            new[axis.name] = normalizeValue(value, triple)
         return new
 
     def normalize(self):

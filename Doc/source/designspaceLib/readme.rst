@@ -216,8 +216,6 @@ Attributes
 -  ``glyphs``: dict for special master definitions for glyphs. If glyphs
    need special masters (to record the results of executed rules for
    example). MutatorMath.
--  ``mutedGlyphNames``: list of glyphnames that should be suppressed in
-   the generation of this instance.
 -  ``kerning``: bool. Indicates if this instance needs its kerning
    calculated. MutatorMath.
 -  ``info``: bool. Indicated if this instance needs the interpolating
@@ -277,17 +275,19 @@ AxisDescriptor object
    dicts. MutatorMath + Varlib.
 -  ``labelNames``: dict. When defining a non-registered axis, it will be
    necessary to define user-facing readable names for the axis. Keyed by
-   xml:lang code. Varlib.
--  ``minimum``: number. The minimum value for this axis. MutatorMath +
-   Varlib.
--  ``maximum``: number. The maximum value for this axis. MutatorMath +
-   Varlib.
--  ``default``: number. The default value for this axis, i.e. when a new
-   location is created, this is the value this axis will get.
+   xml:lang code. Values are required to be ``unicode`` strings, even if
+   they only contain ASCII characters.
+-  ``minimum``: number. The minimum value for this axis in user space.
    MutatorMath + Varlib.
--  ``map``: list of input / output values that can describe a warp of
-   user space to designspace coordinates. If no map values are present,
-   it is assumed it is [(minimum, minimum), (maximum, maximum)]. Varlib.
+-  ``maximum``: number. The maximum value for this axis in user space.
+   MutatorMath + Varlib.
+-  ``default``: number. The default value for this axis, i.e. when a new
+   location is created, this is the value this axis will get in user
+   space. MutatorMath + Varlib.
+-  ``map``: list of input / output values that can describe a warp of user space
+   to design space coordinates. If no map values are present, it is assumed user
+   space is the same as design space, as in [(minimum, minimum), (maximum, maximum)].
+   Varlib.
 
 .. code:: python
 

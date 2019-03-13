@@ -1,15 +1,26 @@
 from __future__ import print_function, division, absolute_import
 from fontTools.misc.py23 import *
-from fontTools.ttLib import TTFont
+from fontTools.ttLib import TTFont, newTable
 from fontTools.varLib import build
-from fontTools.varLib import main as varLib_main
-from fontTools.designspaceLib import DesignSpaceDocumentError
+from fontTools.varLib import main as varLib_main, load_masters
+from fontTools.designspaceLib import (
+    DesignSpaceDocumentError, DesignSpaceDocument, SourceDescriptor,
+)
 import difflib
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+import pytest
+
+
+def reload_font(font):
+    """(De)serialize to get final binary layout."""
+    buf = BytesIO()
+    font.save(buf)
+    buf.seek(0)
+    return TTFont(buf)
 
 
 class BuildTest(unittest.TestCase):
@@ -113,10 +124,7 @@ class BuildTest(unittest.TestCase):
             # some data (e.g. counts printed in TTX inline comments) is only
             # calculated at compile time, so before we can compare the TTX
             # dumps we need to save to a temporary stream, and realod the font
-            buf = BytesIO()
-            varfont.save(buf)
-            buf.seek(0)
-            varfont = TTFont(buf)
+            varfont = reload_font(varfont)
 
         expected_ttx_path = self.get_test_output(expected_ttx_name + '.ttx')
         self.expect_ttx(varfont, expected_ttx_path, tables)
@@ -160,7 +168,7 @@ class BuildTest(unittest.TestCase):
         avar segment will not be empty but will contain the default axis value
         maps: {-1.0: -1.0, 0.0: 0.0, 1.0: 1.0}.
 
-        This is to to work around an issue with some rasterizers:
+        This is to work around an issue with some rasterizers:
         https://github.com/googlei18n/fontmake/issues/295
         https://github.com/fonttools/fonttools/issues/1011
         """
@@ -180,7 +188,7 @@ class BuildTest(unittest.TestCase):
         resulting avar segment still contains the default axis value maps:
         {-1.0: -1.0, 0.0: 0.0, 1.0: 1.0}.
 
-        This is again to to work around an issue with some rasterizers:
+        This is again to work around an issue with some rasterizers:
         https://github.com/googlei18n/fontmake/issues/295
         https://github.com/fonttools/fonttools/issues/1011
         """
@@ -203,6 +211,38 @@ class BuildTest(unittest.TestCase):
             expected_ttx_name="FeatureVars",
             save_before_dump=True,
         )
+
+    def test_varlib_gvar_explicit_delta(self):
+        """The variable font contains a composite glyph odieresis which does not
+        need a gvar entry, because all its deltas are 0, but it must be added
+        anyway to work around an issue with macOS 10.14.
+
+        https://github.com/fonttools/fonttools/issues/1381
+        """
+        test_name = 'BuildGvarCompositeExplicitDelta'
+        self._run_varlib_build_test(
+            designspace_name=test_name,
+            font_name='TestFamily4',
+            tables=['gvar'],
+            expected_ttx_name=test_name
+        )
+
+    def test_varlib_build_CFF2(self):
+        ds_path = self.get_test_input('TestCFF2.designspace')
+        suffix = '.otf'
+        expected_ttx_name = 'BuildTestCFF2'
+        tables = ["fvar", "CFF2"]
+
+        finder = lambda s: s.replace('.ufo', suffix)
+        varfont, model, _ = build(ds_path, finder)
+        # some data (e.g. counts printed in TTX inline comments) is only
+        # calculated at compile time, so before we can compare the TTX
+        # dumps we need to save to a temporary stream, and realod the font
+        varfont = reload_font(varfont)
+
+        expected_ttx_path = self.get_test_output(expected_ttx_name + '.ttx')
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+        self.check_ttx_dump(varfont, expected_ttx_path, tables, suffix)
 
     def test_varlib_main_ttf(self):
         """Mostly for testing varLib.main()
@@ -249,6 +289,172 @@ class BuildTest(unittest.TestCase):
         tables = [table_tag for table_tag in varfont.keys() if table_tag != 'head']
         expected_ttx_path = self.get_test_output('BuildMain.ttx')
         self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varlib_build_from_ds_object_in_memory_ttfonts(self):
+        ds_path = self.get_test_input("Build.designspace")
+        ttx_dir = self.get_test_input("master_ttx_interpolatable_ttf")
+        expected_ttx_path = self.get_test_output("BuildMain.ttx")
+
+        self.temp_dir()
+        for path in self.get_file_list(ttx_dir, '.ttx', 'TestFamily-'):
+            self.compile_font(path, ".ttf", self.tempdir)
+
+        ds = DesignSpaceDocument.fromfile(ds_path)
+        for source in ds.sources:
+            filename = os.path.join(
+                self.tempdir, os.path.basename(source.filename).replace(".ufo", ".ttf")
+            )
+            source.font = TTFont(
+                filename, recalcBBoxes=False, recalcTimestamp=False, lazy=True
+            )
+            source.filename = None  # Make sure no file path gets into build()
+
+        varfont, _, _ = build(ds)
+        varfont = reload_font(varfont)
+        tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varlib_build_from_ttf_paths(self):
+        ds_path = self.get_test_input("Build.designspace")
+        ttx_dir = self.get_test_input("master_ttx_interpolatable_ttf")
+        expected_ttx_path = self.get_test_output("BuildMain.ttx")
+
+        self.temp_dir()
+        for path in self.get_file_list(ttx_dir, '.ttx', 'TestFamily-'):
+            self.compile_font(path, ".ttf", self.tempdir)
+
+        ds = DesignSpaceDocument.fromfile(ds_path)
+        for source in ds.sources:
+            source.path = os.path.join(
+                self.tempdir, os.path.basename(source.filename).replace(".ufo", ".ttf")
+            )
+        ds.updatePaths()
+
+        varfont, _, _ = build(ds)
+        varfont = reload_font(varfont)
+        tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varlib_build_from_ttx_paths(self):
+        ds_path = self.get_test_input("Build.designspace")
+        ttx_dir = self.get_test_input("master_ttx_interpolatable_ttf")
+        expected_ttx_path = self.get_test_output("BuildMain.ttx")
+
+        ds = DesignSpaceDocument.fromfile(ds_path)
+        for source in ds.sources:
+            source.path = os.path.join(
+                ttx_dir, os.path.basename(source.filename).replace(".ufo", ".ttx")
+            )
+        ds.updatePaths()
+
+        varfont, _, _ = build(ds)
+        varfont = reload_font(varfont)
+        tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varlib_build_sparse_masters(self):
+        ds_path = self.get_test_input("SparseMasters.designspace")
+        expected_ttx_path = self.get_test_output("SparseMasters.ttx")
+
+        varfont, _, _ = build(ds_path)
+        varfont = reload_font(varfont)
+        tables = [table_tag for table_tag in varfont.keys() if table_tag != "head"]
+        self.expect_ttx(varfont, expected_ttx_path, tables)
+
+    def test_varlib_build_sparse_masters_MVAR(self):
+        import fontTools.varLib.mvar
+
+        ds_path = self.get_test_input("SparseMasters.designspace")
+        ds = DesignSpaceDocument.fromfile(ds_path)
+        load_masters(ds)
+
+        # Trigger MVAR generation so varLib is forced to create deltas with a
+        # sparse master inbetween.
+        font_0_os2 = ds.sources[0].font["OS/2"]
+        font_0_os2.sTypoAscender = 1
+        font_0_os2.sTypoDescender = 1
+        font_0_os2.sTypoLineGap = 1
+        font_0_os2.usWinAscent = 1
+        font_0_os2.usWinDescent = 1
+        font_0_os2.sxHeight = 1
+        font_0_os2.sCapHeight = 1
+        font_0_os2.ySubscriptXSize = 1
+        font_0_os2.ySubscriptYSize = 1
+        font_0_os2.ySubscriptXOffset = 1
+        font_0_os2.ySubscriptYOffset = 1
+        font_0_os2.ySuperscriptXSize = 1
+        font_0_os2.ySuperscriptYSize = 1
+        font_0_os2.ySuperscriptXOffset = 1
+        font_0_os2.ySuperscriptYOffset = 1
+        font_0_os2.yStrikeoutSize = 1
+        font_0_os2.yStrikeoutPosition = 1
+        font_0_vhea = newTable("vhea")
+        font_0_vhea.ascent = 1
+        font_0_vhea.descent = 1
+        font_0_vhea.lineGap = 1
+        font_0_vhea.caretSlopeRise = 1
+        font_0_vhea.caretSlopeRun = 1
+        font_0_vhea.caretOffset = 1
+        ds.sources[0].font["vhea"] = font_0_vhea
+        font_0_hhea = ds.sources[0].font["hhea"]
+        font_0_hhea.caretSlopeRise = 1
+        font_0_hhea.caretSlopeRun = 1
+        font_0_hhea.caretOffset = 1
+        font_0_post = ds.sources[0].font["post"]
+        font_0_post.underlineThickness = 1
+        font_0_post.underlinePosition = 1
+
+        font_2_os2 = ds.sources[2].font["OS/2"]
+        font_2_os2.sTypoAscender = 800
+        font_2_os2.sTypoDescender = 800
+        font_2_os2.sTypoLineGap = 800
+        font_2_os2.usWinAscent = 800
+        font_2_os2.usWinDescent = 800
+        font_2_os2.sxHeight = 800
+        font_2_os2.sCapHeight = 800
+        font_2_os2.ySubscriptXSize = 800
+        font_2_os2.ySubscriptYSize = 800
+        font_2_os2.ySubscriptXOffset = 800
+        font_2_os2.ySubscriptYOffset = 800
+        font_2_os2.ySuperscriptXSize = 800
+        font_2_os2.ySuperscriptYSize = 800
+        font_2_os2.ySuperscriptXOffset = 800
+        font_2_os2.ySuperscriptYOffset = 800
+        font_2_os2.yStrikeoutSize = 800
+        font_2_os2.yStrikeoutPosition = 800
+        font_2_vhea = newTable("vhea")
+        font_2_vhea.ascent = 800
+        font_2_vhea.descent = 800
+        font_2_vhea.lineGap = 800
+        font_2_vhea.caretSlopeRise = 800
+        font_2_vhea.caretSlopeRun = 800
+        font_2_vhea.caretOffset = 800
+        ds.sources[2].font["vhea"] = font_2_vhea
+        font_2_hhea = ds.sources[2].font["hhea"]
+        font_2_hhea.caretSlopeRise = 800
+        font_2_hhea.caretSlopeRun = 800
+        font_2_hhea.caretOffset = 800
+        font_2_post = ds.sources[2].font["post"]
+        font_2_post.underlineThickness = 800
+        font_2_post.underlinePosition = 800
+
+        varfont, _, _ = build(ds)
+        mvar_tags = [vr.ValueTag for vr in varfont["MVAR"].table.ValueRecord]
+        assert all(tag in mvar_tags for tag in fontTools.varLib.mvar.MVAR_ENTRIES)
+
+
+def test_load_masters_layerName_without_required_font():
+    ds = DesignSpaceDocument()
+    s = SourceDescriptor()
+    s.font = None
+    s.layerName = "Medium"
+    ds.addSource(s)
+
+    with pytest.raises(
+        AttributeError,
+        match="specified a layer name but lacks the required TTFont object",
+    ):
+        load_masters(ds)
 
 
 if __name__ == "__main__":

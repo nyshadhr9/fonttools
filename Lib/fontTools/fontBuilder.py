@@ -364,9 +364,18 @@ class FontBuilder(object):
         """Set the glyph order for the font."""
         self.font.setGlyphOrder(glyphOrder)
 
-    def setupCharacterMap(self, cmapping, allowFallback=False):
+    def setupCharacterMap(self, cmapping, uvs=None, allowFallback=False):
         """Build the `cmap` table for the font. The `cmapping` argument should
         be a dict mapping unicode code points as integers to glyph names.
+
+        The `uvs` argument, when passed, must be a list of tuples, describing
+        Unicode Variation Sequences. These tuples have three elements:
+            (unicodeValue, variationSelector, glyphName)
+        `unicodeValue` and `variationSelector` are integer code points.
+        `glyphName` may be None, to indicate this is the default variation.
+        Text processors will then use the cmap to find the glyph name.
+        Each Unicode Variation Sequence should be an officially supported
+        sequence, but this is not policed.
         """
         subTables = []
         highestUnicode = max(cmapping)
@@ -390,18 +399,34 @@ class FontBuilder(object):
         subTable_0_3 = buildCmapSubTable(cmapping_3_1, format, 0, 3)
         subTables.append(subTable_0_3)
 
+        if uvs is not None:
+            uvsDict = {}
+            for unicodeValue, variationSelector, glyphName in uvs:
+                if cmapping.get(unicodeValue) == glyphName:
+                    # this is a default variation
+                    glyphName = None
+                if variationSelector not in uvsDict:
+                    uvsDict[variationSelector] = []
+                uvsDict[variationSelector].append((unicodeValue, glyphName))
+            uvsSubTable = buildCmapSubTable({}, 14, 0, 5)
+            uvsSubTable.uvsDict = uvsDict
+            subTables.append(uvsSubTable)
+
         self.font["cmap"] = newTable("cmap")
         self.font["cmap"].tableVersion = 0
         self.font["cmap"].tables = subTables
 
-    def setupNameTable(self, nameStrings):
+    def setupNameTable(self, nameStrings, windows=True, mac=True):
         """Create the `name` table for the font. The `nameStrings` argument must
         be a dict, mapping nameIDs or descriptive names for the nameIDs to name
         record values. A value is either a string, or a dict, mapping language codes
         to strings, to allow localized name table entries.
 
+        By default, both Windows (platformID=3) and Macintosh (platformID=1) name
+        records are added, unless any of `windows` or `mac` arguments is False.
+
         The following descriptive names are available for nameIDs:
-        
+
             copyright (nameID 0)
             familyName (nameID 1)
             styleName (nameID 2)
@@ -438,7 +463,9 @@ class FontBuilder(object):
                 nameID = _nameIDs[nameName]
             if isinstance(nameValue, basestring):
                 nameValue = dict(en=nameValue)
-            nameTable.addMultilingualName(nameValue, ttFont=self.font, nameID=nameID)
+            nameTable.addMultilingualName(
+                nameValue, ttFont=self.font, nameID=nameID, windows=windows, mac=mac
+            )
 
     def setupOS2(self, **values):
         """Create a new `OS/2` table and initialize it with default values,
@@ -455,9 +482,10 @@ class FontBuilder(object):
             self.font["OS/2"].recalcUnicodeRanges(self.font)
 
     def setupCFF(self, psName, fontInfo, charStringsDict, privateDict):
-        assert not self.isTTF
         from .cffLib import CFFFontSet, TopDictIndex, TopDict, CharStrings, \
                 GlobalSubrsIndex, PrivateDict
+
+        assert not self.isTTF
         self.font.sfntVersion = "OTTO"
         fontSet = CFFFontSet()
         fontSet.major = 1
@@ -478,18 +506,87 @@ class FontBuilder(object):
         topDict.Private = private
         for key, value in fontInfo.items():
             setattr(topDict, key, value)
+        if "FontMatrix" not in fontInfo:
+            scale = 1 / self.font["head"].unitsPerEm
+            topDict.FontMatrix = [scale, 0, 0, scale, 0, 0]
 
         charStrings = CharStrings(None, topDict.charset, globalSubrs, private, fdSelect, fdArray)
-        for glypnName, charString in charStringsDict.items():
+        for glyphName, charString in charStringsDict.items():
             charString.private = private
             charString.globalSubrs = globalSubrs
-            charStrings[glypnName] = charString
+            charStrings[glyphName] = charString
         topDict.CharStrings = charStrings
 
         fontSet.topDictIndex.append(topDict)
 
         self.font["CFF "] = newTable("CFF ")
         self.font["CFF "].cff = fontSet
+
+    def setupCFF2(self, charStringsDict, fdArrayList=None, regions=None):
+        from .cffLib import CFFFontSet, TopDictIndex, TopDict, CharStrings, \
+                GlobalSubrsIndex, PrivateDict, FDArrayIndex, FontDict
+
+        assert not self.isTTF
+        self.font.sfntVersion = "OTTO"
+        fontSet = CFFFontSet()
+        fontSet.major = 2
+        fontSet.minor = 0
+
+        cff2GetGlyphOrder = self.font.getGlyphOrder
+        fontSet.topDictIndex = TopDictIndex(None, cff2GetGlyphOrder, None)
+
+        globalSubrs = GlobalSubrsIndex()
+        fontSet.GlobalSubrs = globalSubrs
+
+        if fdArrayList is None:
+            fdArrayList = [{}]
+        fdSelect = None
+        fdArray = FDArrayIndex()
+        fdArray.strings = None
+        fdArray.GlobalSubrs = globalSubrs
+        for privateDict in fdArrayList:
+            fontDict = FontDict()
+            fontDict.setCFF2(True)
+            private = PrivateDict()
+            for key, value in privateDict.items():
+                setattr(private, key, value)
+            fontDict.Private = private
+            fdArray.append(fontDict)
+
+        topDict = TopDict()
+        topDict.cff2GetGlyphOrder = cff2GetGlyphOrder
+        topDict.FDArray = fdArray
+        scale = 1 / self.font["head"].unitsPerEm
+        topDict.FontMatrix = [scale, 0, 0, scale, 0, 0]
+
+        private = fdArray[0].Private
+        charStrings = CharStrings(None, None, globalSubrs, private, fdSelect, fdArray)
+        for glyphName, charString in charStringsDict.items():
+            charString.private = private
+            charString.globalSubrs = globalSubrs
+            charStrings[glyphName] = charString
+        topDict.CharStrings = charStrings
+
+        fontSet.topDictIndex.append(topDict)
+
+        self.font["CFF2"] = newTable("CFF2")
+        self.font["CFF2"].cff = fontSet
+
+        if regions:
+            self.setupCFF2Regions(regions)
+
+    def setupCFF2Regions(self, regions):
+        from .varLib.builder import buildVarRegionList, buildVarData, buildVarStore
+        from .cffLib import VarStoreData
+
+        assert "fvar" in self.font, "fvar must to be set up first"
+        assert "CFF2" in self.font, "CFF2 must to be set up first"
+        axisTags = [a.axisTag for a in self.font["fvar"].axes]
+        varRegionList = buildVarRegionList(regions, axisTags)
+        varData = buildVarData(list(range(len(regions))), None, optimize=False)
+        varStore = buildVarStore(varRegionList, [varData])
+        vstore = VarStoreData(otVarStore=varStore)
+        self.font["CFF2"].cff.topDictIndex[0].VarStore = vstore
 
     def setupGlyf(self, glyphs, calcGlyphBounds=True):
         """Create the `glyf` table from a dict, that maps glyph names

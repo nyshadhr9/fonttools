@@ -1,5 +1,4 @@
-|Travis Build Status| |Appveyor Build status| |Health| |Coverage Status|
-|PyPI| |Gitter Chat|
+|Travis Build Status| |Appveyor Build status| |Coverage Status| |PyPI| |Gitter Chat|
 
 What is this?
 ~~~~~~~~~~~~~
@@ -17,6 +16,13 @@ Installation
 
 FontTools requires `Python <http://www.python.org/download/>`__ 2.7, 3.4
 or later.
+
+**NOTE** After January 1 2019, until no later than June 30 2019, the support
+for *Python 2.7* will be limited to only bug fixes, and no new features will
+be added to the ``py27`` branch. The upcoming FontTools 4.x series will require
+*Python 3.5* or above. You can read more `here <https://python3statement.org>`__
+and `here <https://github.com/fonttools/fonttools/issues/765>`__ for the
+reasons behind this decision.
 
 The package is listed in the Python Package Index (PyPI), so you can
 install it with `pip <https://pip.pypa.io>`__:
@@ -312,7 +318,7 @@ When you run the ``pytest`` command, the tests will run against the
 installed ``fontTools`` package, or the first one found in the
 ``PYTHONPATH``.
 
-You can also use `tox <https://testrun.org/tox/latest/>`__ to
+You can also use `tox <https://tox.readthedocs.io/en/latest/>`__ to
 automatically run tests on different Python versions in isolated virtual
 environments.
 
@@ -400,8 +406,6 @@ Have fun!
    :target: https://travis-ci.org/fonttools/fonttools
 .. |Appveyor Build status| image:: https://ci.appveyor.com/api/projects/status/0f7fmee9as744sl7/branch/master?svg=true
    :target: https://ci.appveyor.com/project/fonttools/fonttools/branch/master
-.. |Health| image:: https://landscape.io/github/behdad/fonttools/master/landscape.svg?style=flat
-   :target: https://landscape.io/github/behdad/fonttools/master
 .. |Coverage Status| image:: https://codecov.io/gh/fonttools/fonttools/branch/master/graph/badge.svg
    :target: https://codecov.io/gh/fonttools/fonttools
 .. |PyPI| image:: https://img.shields.io/pypi/v/fonttools.svg

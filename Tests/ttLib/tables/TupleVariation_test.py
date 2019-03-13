@@ -107,7 +107,7 @@ class TupleVariationTest(unittest.TestCase):
 		self.assertIn("bad delta format", [r.msg for r in captor.records])
 		self.assertEqual([
 			'<tuple>',
-			  '<coord axis="wdth" max="0.5" min="0.3" value="0.4"/>',
+			  '<coord axis="wdth" min="0.3" value="0.4" max="0.5"/>',
 			  '<!-- bad delta #0 -->',
 			'</tuple>',
 		], TupleVariationTest.xml_lines(writer))
@@ -118,7 +118,7 @@ class TupleVariationTest(unittest.TestCase):
 		g.toXML(writer, ["wdth", "wght", "opsz"])
 		self.assertEqual([
 			'<tuple>',
-			  '<coord axis="wdth" max="0.5" min="0.3" value="0.4"/>',
+			  '<coord axis="wdth" min="0.3" value="0.4" max="0.5"/>',
 			  '<coord axis="wght" value="1.0"/>',
 			  '<coord axis="opsz" value="-0.7"/>',
 			  '<delta cvt="0" value="42"/>',
@@ -134,7 +134,7 @@ class TupleVariationTest(unittest.TestCase):
 		g.toXML(writer, ["wdth", "wght", "opsz"])
 		self.assertEqual([
 			'<tuple>',
-			  '<coord axis="wdth" max="0.5" min="0.3" value="0.4"/>',
+			  '<coord axis="wdth" min="0.3" value="0.4" max="0.5"/>',
 			  '<coord axis="wght" value="1.0"/>',
 			  '<coord axis="opsz" value="-0.7"/>',
 			  '<delta pt="0" x="9" y="8"/>',
@@ -370,7 +370,7 @@ class TupleVariationTest(unittest.TestCase):
 		self.assertEqual(({"wght": -1.0, "wdth": 0.5}, 6), decompileCoord(["wght", "wdth"], data, 2))
 
 	def test_decompileCoord_roundTrip(self):
-		# Make sure we are not affected by https://github.com/behdad/fonttools/issues/286
+		# Make sure we are not affected by https://github.com/fonttools/fonttools/issues/286
 		data = deHexStr("7F B9 80 35")
 		values, _ = TupleVariation.decompileCoord_(["wght", "wdth"], data, 0)
 		axisValues = {axis:(val, val, val) for axis, val in  values.items()}

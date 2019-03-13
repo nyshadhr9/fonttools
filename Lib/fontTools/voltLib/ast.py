@@ -83,7 +83,7 @@ class GlyphName(Expression):
         self.glyph = glyph
 
     def glyphSet(self):
-        return frozenset((self.glyph,))
+        return (self.glyph,)
 
 
 class Enum(Expression):
@@ -97,13 +97,13 @@ class Enum(Expression):
             yield e
 
     def glyphSet(self, groups=None):
-        glyphs = set()
+        glyphs = []
         for element in self.enum:
             if isinstance(element, (GroupName, Enum)):
-                glyphs = glyphs.union(element.glyphSet(groups))
+                glyphs.extend(element.glyphSet(groups))
             else:
-                glyphs = glyphs.union(element.glyphSet())
-        return frozenset(glyphs)
+                glyphs.extend(element.glyphSet())
+        return tuple(glyphs)
 
 
 class GroupName(Expression):
@@ -133,8 +133,7 @@ class Range(Expression):
         self.parser = parser
 
     def glyphSet(self):
-        glyphs = self.parser.glyph_range(self.start, self.end)
-        return frozenset(glyphs)
+        return tuple(self.parser.glyph_range(self.start, self.end))
 
 
 class ScriptDefinition(Statement):
@@ -162,12 +161,14 @@ class FeatureDefinition(Statement):
 
 
 class LookupDefinition(Statement):
-    def __init__(self, name, process_base, process_marks, direction,
-                 reversal, comments, context, sub, pos, location=None):
+    def __init__(self, name, process_base, process_marks, mark_glyph_set,
+                 direction, reversal, comments, context, sub, pos,
+                 location=None):
         Statement.__init__(self, location)
         self.name = name
         self.process_base = process_base
         self.process_marks = process_marks
+        self.mark_glyph_set = mark_glyph_set
         self.direction = direction
         self.reversal = reversal
         self.comments = comments

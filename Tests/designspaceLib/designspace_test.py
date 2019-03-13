@@ -4,6 +4,7 @@ from __future__ import (print_function, division, absolute_import,
                         unicode_literals)
 
 import os
+import sys
 import pytest
 import warnings
 
@@ -65,10 +66,10 @@ def test_fill_document(tmpdir):
     a2 = AxisDescriptor()
     a2.minimum = 0
     a2.maximum = 1000
-    a2.default = 20
+    a2.default = 15
     a2.name = "width"
     a2.tag = "wdth"
-    a2.map = [(0.0, 10.0), (401.0, 66.0), (1000.0, 990.0)]
+    a2.map = [(0.0, 10.0), (15.0, 20.0), (401.0, 66.0), (1000.0, 990.0)]
     a2.hidden = True
     a2.labelNames[u'fr'] = u"Chasse"
     doc.addAxis(a2)
@@ -618,7 +619,7 @@ def test_normalise4():
     for axis in doc.axes:
         r.append((axis.name, axis.map))
     r.sort()
-    assert r == [('ddd', [(0, 0.1), (300, 0.5), (600, 0.5), (1000, 0.9)])]
+    assert r == [('ddd', [(0, 0.0), (300, 0.5), (600, 0.5), (1000, 1.0)])]
 
 def test_axisMapping():
     # note: because designspance lib does not do any actual
@@ -637,7 +638,7 @@ def test_axisMapping():
     for axis in doc.axes:
         r.append((axis.name, axis.map))
     r.sort()
-    assert r == [('ddd', [(0, 0.1), (300, 0.5), (600, 0.5), (1000, 0.9)])]
+    assert r == [('ddd', [(0, 0.0), (300, 0.5), (600, 0.5), (1000, 1.0)])]
 
 def test_rulesConditions(tmpdir):
     # tests of rules, conditionsets and conditions
@@ -785,3 +786,122 @@ def test_documentLib(tmpdir):
     assert dummyKey in new.lib
     assert new.lib[dummyKey] == dummyData
 
+
+def test_updatePaths(tmpdir):
+    doc = DesignSpaceDocument()
+    doc.path = str(tmpdir / "foo" / "bar" / "MyDesignspace.designspace")
+
+    s1 = SourceDescriptor()
+    doc.addSource(s1)
+
+    doc.updatePaths()
+
+    # expect no changes
+    assert s1.path is None
+    assert s1.filename is None
+
+    name1 = "../masters/Source1.ufo"
+    path1 = posix(str(tmpdir / "foo" / "masters" / "Source1.ufo"))
+
+    s1.path = path1
+    s1.filename = None
+
+    doc.updatePaths()
+
+    assert s1.path == path1
+    assert s1.filename == name1  # empty filename updated
+
+    name2 = "../masters/Source2.ufo"
+    s1.filename = name2
+
+    doc.updatePaths()
+
+    # conflicting filename discarded, path always gets precedence
+    assert s1.path == path1
+    assert s1.filename == "../masters/Source1.ufo"
+
+    s1.path = None
+    s1.filename = name2
+
+    doc.updatePaths()
+
+    # expect no changes
+    assert s1.path is None
+    assert s1.filename == name2
+
+
+@pytest.mark.skipif(sys.version_info[:2] < (3, 6), reason="pathlib is only tested on 3.6 and up")
+def test_read_with_path_object():
+    import pathlib
+    source = (pathlib.Path(__file__) / "../data/test.designspace").resolve()
+    assert source.exists()
+    doc = DesignSpaceDocument()
+    doc.read(source)
+
+
+@pytest.mark.skipif(sys.version_info[:2] < (3, 6), reason="pathlib is only tested on 3.6 and up")
+def test_with_with_path_object(tmpdir):
+    import pathlib
+    tmpdir = str(tmpdir)
+    dest = pathlib.Path(tmpdir) / "test.designspace"
+    doc = DesignSpaceDocument()
+    doc.write(dest)
+    assert dest.exists()
+
+
+def test_findDefault_axis_mapping():
+    designspace_string = """\
+<?xml version='1.0' encoding='UTF-8'?>
+<designspace format="4.0">
+  <axes>
+    <axis tag="wght" name="Weight" minimum="100" maximum="800" default="400">
+      <map input="100" output="20"/>
+      <map input="300" output="40"/>
+      <map input="400" output="80"/>
+      <map input="700" output="126"/>
+      <map input="800" output="170"/>
+    </axis>
+    <axis tag="ital" name="Italic" minimum="0" maximum="1" default="1"/>
+  </axes>
+  <sources>
+    <source filename="Font-Light.ufo">
+      <location>
+        <dimension name="Weight" xvalue="20"/>
+        <dimension name="Italic" xvalue="0"/>
+      </location>
+    </source>
+    <source filename="Font-Regular.ufo">
+      <location>
+        <dimension name="Weight" xvalue="80"/>
+        <dimension name="Italic" xvalue="0"/>
+      </location>
+    </source>
+    <source filename="Font-Bold.ufo">
+      <location>
+        <dimension name="Weight" xvalue="170"/>
+        <dimension name="Italic" xvalue="0"/>
+      </location>
+    </source>
+    <source filename="Font-LightItalic.ufo">
+      <location>
+        <dimension name="Weight" xvalue="20"/>
+        <dimension name="Italic" xvalue="1"/>
+      </location>
+    </source>
+    <source filename="Font-Italic.ufo">
+      <location>
+        <dimension name="Weight" xvalue="80"/>
+        <dimension name="Italic" xvalue="1"/>
+      </location>
+    </source>
+    <source filename="Font-BoldItalic.ufo">
+      <location>
+        <dimension name="Weight" xvalue="170"/>
+        <dimension name="Italic" xvalue="1"/>
+      </location>
+    </source>
+  </sources>
+</designspace>
+    """
+    designspace = DesignSpaceDocument.fromstring(designspace_string)
+    assert designspace.findDefault().filename == "Font-Italic.ufo"

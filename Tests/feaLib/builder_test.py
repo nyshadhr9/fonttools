@@ -65,12 +65,13 @@ class BuilderTest(unittest.TestCase):
         spec9a spec9b spec9c1 spec9c2 spec9c3 spec9d spec9e spec9f spec9g
         spec10
         bug453 bug457 bug463 bug501 bug502 bug504 bug505 bug506 bug509
-        bug512 bug514 bug568 bug633 bug1307
+        bug512 bug514 bug568 bug633 bug1307 bug1459
         name size size2 multiple_feature_blocks omitted_GlyphClassDef
         ZeroValue_SinglePos_horizontal ZeroValue_SinglePos_vertical
         ZeroValue_PairPos_horizontal ZeroValue_PairPos_vertical
         ZeroValue_ChainSinglePos_horizontal ZeroValue_ChainSinglePos_vertical
-        PairPosSubtable
+        PairPosSubtable ChainSubstSubtable ChainPosSubtable LigatureSubtable
+        AlternateSubtable MultipleSubstSubtable SingleSubstSubtable
     """.split()
 
     def __init__(self, methodName):
@@ -512,17 +513,20 @@ class BuilderTest(unittest.TestCase):
         addOpenTypeFeatures(font, tree)
         assert "GSUB" in font
 
+    @unittest.skipIf(sys.version_info[0:2] < (3, 4),
+                     "assertLogs() was introduced in 3.4")
     def test_unsupported_subtable_break(self):
-        self.assertRaisesRegex(
-            FeatureLibError,
-            'explicit "subtable" statement is intended for .* class kerning',
-            self.build,
-            "feature liga {"
-            "    sub f f by f_f;"
-            "    subtable;"
-            "    sub f i by f_i;"
-            "} liga;"
-        )
+        with self.assertLogs(level='WARNING') as logs:
+            self.build(
+                "feature test {"
+                "    pos a 10;"
+                "    subtable;"
+                "    pos b 10;"
+                "} test;"
+            )
+        self.assertEqual(logs.output,
+                ['WARNING:fontTools.feaLib.builder:<features>:1:32: '
+                 'unsupported "subtable" statement for lookup type'])
 
     def test_skip_featureNames_if_no_name_table(self):
         features = (
