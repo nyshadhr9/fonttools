@@ -139,7 +139,7 @@ def instantiateCvar(varfont, location):
     if newVariations:
         cvar.variations = newVariations
     else:
-      del varfont["cvar"]
+        del varfont["cvar"]
 
 
 def setMvarDeltas(varfont, location):
@@ -157,8 +157,9 @@ def setMvarDeltas(varfont, location):
         delta = otRound(varStoreInstancer[rec.VarIdx])
         if not delta:
             continue
-        setattr(varfont[tableTag], itemName,
-            getattr(varfont[tableTag], itemName) + delta)
+        setattr(
+            varfont[tableTag], itemName, getattr(varfont[tableTag], itemName) + delta
+        )
 
 
 def instantiateMvar(varfont, location):
@@ -180,7 +181,8 @@ def instantiateItemVariationStore(varfont, tableName, location):
     for regionIndex, region in enumerate(table.VarStore.VarRegionList.Region):
         # collect set of axisTags which have influence: peakCoord != 0
         regionAxes = set(
-            key for key, value in region.get_support(fvar.axes).items()
+            key
+            for key, value in region.get_support(fvar.axes).items()
             if value[PEAK_COORD_INDEX] != 0
         )
         pinnedRegionAxes = regionAxes & pinnedAxes
@@ -195,7 +197,8 @@ def instantiateItemVariationStore(varfont, tableName, location):
         else:
             # This region will be retained but the deltas have to be adjusted.
             pinnedSupport = {
-                key: value for key, value in enumerate(region.get_support(fvar.axes))
+                key: value
+                for key, value in enumerate(region.get_support(fvar.axes))
                 if key in pinnedRegionAxes
             }
             pinnedScalar = supportScalar(location, pinnedSupport)
@@ -205,7 +208,8 @@ def instantiateItemVariationStore(varfont, tableName, location):
                 # For all pinnedRegionAxes make their influence null by setting
                 # PeakCoord to 0.
                 index = next(
-                    index for index, axis in enumerate(fvar.axes)
+                    index
+                    for index, axis in enumerate(fvar.axes)
                     if axis.axisTag == axisname
                 )
                 region.VarRegionAxis[index].PeakCoord = 0
@@ -215,18 +219,19 @@ def instantiateItemVariationStore(varfont, tableName, location):
     table.VarStore.VarRegionList.Region = newRegions
 
     if not table.VarStore.VarRegionList.Region:
-        # Delete MVAR table if no more regions left.
+        # Delete table if no more regions left.
         del varfont[tableName]
         return
 
     # First apply scalars to deltas then remove deltas in reverse index order
     if regionInfluenceMap:
         regionsToBeRemoved = [
-            regionIndex for regionIndex,scalar in regionInfluenceMap.items()
+            regionIndex
+            for regionIndex, scalar in regionInfluenceMap.items()
             if scalar is None
         ]
         for vardata in table.VarStore.VarData:
-            for regionIndex, scalar  in regionInfluenceMap.items():
+            for regionIndex, scalar in regionInfluenceMap.items():
                 if scalar is not None:
                     for item in vardata.Item:
                         item[regionIndex] = otRound(item[regionIndex] * scalar)
@@ -234,7 +239,51 @@ def instantiateItemVariationStore(varfont, tableName, location):
             for index in sorted(regionsToBeRemoved, reverse=True):
                 del vardata.VarRegionIndex[index]
                 for item in vardata.Item:
-                        del item[index]
+                    del item[index]
+
+
+def instantiateFeatureVariationStore(varfont, tableName, location):
+    table = varfont[tableName].table
+    if not hasattr(table, "FeatureVariations"):
+        log.info("No FeatureVariations in %s", tableName)
+        return
+
+    log.info("Instantiating FeatureVariation store of %s table", tableName)
+    variations = table.FeatureVariations
+    fvar = varfont["fvar"]
+    newRecords = []
+    pinnedAxes = set(location.keys())
+    featureVariationApplied = False
+    for record in variations.FeatureVariationRecord:
+        retainRecord = True
+        applies = True
+        newCondtitions = []
+        for condition in record.ConditionSet.ConditionTable:
+            axisIdx = condition.AxisIndex
+            axisTag = fvar.axes[axisIdx].axisTag
+            if condition.Format == 1 and axisTag in pinnedAxes:
+                Min = condition.FilterRangeMinValue
+                Max = condition.FilterRangeMaxValue
+                v = location[axisTag]
+                if not (Min <= v <= Max):
+                    # condition not met so remove entire record
+                    retainRecord = False
+                    break
+            else:
+                applies = False
+                newCondtitions.append(condition)
+
+        if retainRecord and not len(newCondtitions) == 0:
+            record.ConditionSet.ConditionTable = newCondtitions
+            newRecords.append(record)
+
+        if applies and not featureVariationApplied:
+            assert record.FeatureTableSubstitution.Version == 0x00010000
+            for rec in record.FeatureTableSubstitution.SubstitutionRecord:
+                table.FeatureList.FeatureRecord[rec.FeatureIndex].Feature = rec.Feature
+            # Set variations only once
+            featureVariationApplied = True
+    table.FeatureVariations.FeatureVariationRecord = newRecords
 
 
 def normalize(value, triple, avar_mapping):
@@ -300,6 +349,12 @@ def instantiateVariableFont(varfont, axis_limits, inplace=False):
 
     if "MVAR" in varfont:
         instantiateMvar(varfont, axis_limits)
+
+    if "GSUB" in varfont:
+        instantiateFeatureVariationStore(varfont, "GSUB", axis_limits)
+
+    if "GPOS" in varfont:
+        instantiateFeatureVariationStore(varfont, "GPOS", axis_limits)
 
     # TODO: actually process HVAR instead of dropping it
     del varfont["HVAR"]
