@@ -20,6 +20,7 @@ from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
 from fontTools.varLib.varStore import VarStoreInstancer
 from fontTools.varLib.mvar import MVAR_ENTRIES
 from copy import deepcopy
+import bisect
 import logging
 import os
 import re
@@ -178,12 +179,17 @@ def instantiateItemVariationStore(varfont, tableName, location):
     newRegions = []
     regionInfluenceMap = {}
     pinnedAxes = set(location.keys())
+    fvarAxisIndices = {
+        axis.axisTag: index
+        for index, axis in enumerate(fvar.axes)
+        if axis.axisTag in pinnedAxes
+    }
     for regionIndex, region in enumerate(table.VarStore.VarRegionList.Region):
-        # collect set of axisTags which have influence: peakCoord != 0
+        # collect set of axisTags which have influence: peak != 0
         regionAxes = set(
-            key
-            for key, value in region.get_support(fvar.axes).items()
-            if value[PEAK_COORD_INDEX] != 0
+            axis
+            for axis, (start, peak, end) in region.get_support(fvar.axes).items()
+            if peak != 0
         )
         pinnedRegionAxes = regionAxes & pinnedAxes
         if not pinnedRegionAxes:
@@ -197,21 +203,17 @@ def instantiateItemVariationStore(varfont, tableName, location):
         else:
             # This region will be retained but the deltas have to be adjusted.
             pinnedSupport = {
-                key: value
-                for key, value in enumerate(region.get_support(fvar.axes))
-                if key in pinnedRegionAxes
+                axis: support
+                for axis, support in region.get_support(fvar.axes).items()
+                if axis in pinnedRegionAxes
             }
             pinnedScalar = supportScalar(location, pinnedSupport)
             regionInfluenceMap.update({regionIndex: pinnedScalar})
 
-            for axisname in pinnedRegionAxes:
+            for axis in pinnedRegionAxes:
                 # For all pinnedRegionAxes make their influence null by setting
                 # PeakCoord to 0.
-                index = next(
-                    index
-                    for index, axis in enumerate(fvar.axes)
-                    if axis.axisTag == axisname
-                )
+                index = fvarAxisIndices[axis]
                 region.VarRegionAxis[index].PeakCoord = 0
 
             newRegions.append(region)
@@ -223,23 +225,44 @@ def instantiateItemVariationStore(varfont, tableName, location):
         del varfont[tableName]
         return
 
-    # First apply scalars to deltas then remove deltas in reverse index order
+    # Start modifying deltas.
     if regionInfluenceMap:
-        regionsToBeRemoved = [
-            regionIndex
-            for regionIndex, scalar in regionInfluenceMap.items()
-            if scalar is None
-        ]
+        regionsToBeRemoved = sorted(
+            [
+                regionIndex
+                for regionIndex, scalar in regionInfluenceMap.items()
+                if scalar is None
+            ]
+        )
         for vardata in table.VarStore.VarData:
+            varRegionIndexMapping = {v: k for k, v in enumerate(vardata.VarRegionIndex)}
+            # Apply scalars for regions to be retained.
             for regionIndex, scalar in regionInfluenceMap.items():
                 if scalar is not None:
+                    varRegionIndex = varRegionIndexMapping[regionIndex]
                     for item in vardata.Item:
-                        item[regionIndex] = otRound(item[regionIndex] * scalar)
+                        item[varRegionIndex] = otRound(item[varRegionIndex] * scalar)
 
-            for index in sorted(regionsToBeRemoved, reverse=True):
-                del vardata.VarRegionIndex[index]
-                for item in vardata.Item:
-                    del item[index]
+            if regionsToBeRemoved:
+                # Delete deltas (in reverse order) for regions to be removed.
+                for regionIndex in sorted(
+                    regionsToBeRemoved,
+                    key=lambda x: varRegionIndexMapping[x],
+                    reverse=True,
+                ):
+                    varRegionIndex = varRegionIndexMapping[regionIndex]
+                    for item in vardata.Item:
+                        del item[varRegionIndex]
+
+                # Adjust VarRegionIndex since we are deleting regions.
+                newVarRegionIndex = []
+                for varRegionIndex in vardata.VarRegionIndex:
+                    if varRegionIndex not in regionsToBeRemoved:
+                        newVarRegionIndex.append(
+                            varRegionIndex
+                            - bisect.bisect_left(regionsToBeRemoved, varRegionIndex)
+                        )
+                vardata.VarRegionIndex = newVarRegionIndex
 
 
 def instantiateFeatureVariationStore(varfont, tableName, location):
